@@ -84,12 +84,44 @@ const TOOL_NAMES = new Set(
   ].map((name) => name.toLowerCase()),
 );
 
+const TOOL_NAME_LABELS: Record<string, string> = {
+  read: "读取文件",
+  write: "写入文件",
+  edit: "编辑文件",
+  exec: "执行命令",
+  process: "进程管理",
+  web_search: "网页搜索",
+  web_fetch: "抓取网页",
+  browser: "浏览器",
+  message: "发送消息",
+  sessions_list: "列会话",
+  sessions_send: "跨会话发送",
+  sessions_spawn: "派生代理",
+  session_status: "会话状态",
+  cron: "定时任务",
+  feishu_doc_read: "飞书读文档",
+  feishu_doc_write: "飞书写文档",
+  feishu_doc_append: "飞书追加",
+  feishu_doc_list_blocks: "飞书列文档块",
+  feishu_doc_update: "飞书更新文档块",
+  feishu_doc_delete_block: "飞书删除文档块",
+  feishu_folder_list: "飞书列文件夹",
+  feishu_doc_create: "飞书创建文档",
+  memory_search: "记忆搜索",
+  memory_get: "读取记忆",
+  tts: "语音合成",
+  canvas: "画布控制",
+  nodes: "节点管理",
+  gateway: "网关管理",
+  agents_list: "列出代理",
+};
+
 function splitToolSummaryLines(text: string) {
   const toolLines: string[] = [];
   const otherLines: string[] = [];
   const lines = text.split(/\r?\n/);
   const toolRegex =
-    /^\s*[\p{Extended_Pictographic}\uFE0F\u200D\s]+([A-Za-z0-9_]+)\s*:/u;
+    /^\s*[\p{Extended_Pictographic}\uFE0F\u200D\s]+([A-Za-z0-9_]+)\s*:\s*(.*)$/u;
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -99,9 +131,13 @@ function splitToolSummaryLines(text: string) {
     }
     const match = line.match(toolRegex);
     if (match) {
-      const toolName = match[1]?.toLowerCase();
+      const rawToolName = match[1] ?? "";
+      const toolName = rawToolName.toLowerCase();
       if (toolName && TOOL_NAMES.has(toolName)) {
-        toolLines.push(line);
+        const meta = match[2]?.trim();
+        const label = TOOL_NAME_LABELS[toolName] ?? rawToolName;
+        const header = `调用\`${label}\`工具:`;
+        toolLines.push(meta ? `${header} ${meta}` : header);
         continue;
       }
     }
