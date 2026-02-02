@@ -9,12 +9,19 @@
 
 ## 相对上游的新增
 
-- **卡片标题多状态/多颜色**（思考中/调用工具中/完成/异常）
+- **卡片标题多状态/多颜色**（思考中/调用工具中/完成/异常等）
 - **流式更新同一条卡片**（内置节流，避免频率限制）
 - **工具过程展示**（来自工具汇总文本的解析）
 - **结束后折叠工具过程面板**（突出最终答案）
 - 新增 **renderEngine**，可选择 `simple`/`agent-card` 渲染器
 - **Outbound 推送支持卡片**（cron/主动推送也可富文本渲染）
+
+示例：
+工具调用中：
+<img width="1320" height="286" alt="image" src="https://github.com/user-attachments/assets/d4212252-b591-449b-b53e-dd8e44bec915" />
+
+执行完成（过程自动折叠，点击展开）：
+<img width="1330" height="598" alt="image" src="https://github.com/user-attachments/assets/3b8a2a53-6c8f-4184-8f61-d4a225bdea70" />
 
 ---
 
