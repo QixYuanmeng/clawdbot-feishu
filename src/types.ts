@@ -56,6 +56,23 @@ export type FeishuMediaInfo = {
   placeholder: string;
 };
 
+export type FeishuHistoryMessage = {
+  messageId: string;
+  senderId: string;
+  senderType: string;
+  content: string;
+  contentType: string;
+  createTime: number;
+  deleted?: boolean;
+};
+
+export type ListMessagesResult = {
+  messages: FeishuHistoryMessage[];
+  hasMore: boolean;
+  pageToken?: string;
+  total: number;
+};
+
 export type FeishuToolsConfig = {
   doc?: boolean;
   wiki?: boolean;
