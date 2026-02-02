@@ -6,7 +6,12 @@ import {
   DEFAULT_GROUP_HISTORY_LIMIT,
   type HistoryEntry,
 } from "openclaw/plugin-sdk";
-import type { FeishuConfig, FeishuMessageContext, FeishuMediaInfo } from "./types.js";
+import type {
+  FeishuConfig,
+  FeishuMessageContext,
+  FeishuMediaInfo,
+  FeishuHistoryMessage,
+} from "./types.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { createFeishuClient } from "./client.js";
 import {
@@ -16,13 +21,138 @@ import {
   isFeishuGroupAllowed,
 } from "./policy.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
-import { getMessageFeishu } from "./send.js";
+import { getMessageFeishu, listMessagesFeishu } from "./send.js";
 import { downloadImageFeishu, downloadMessageResourceFeishu } from "./media.js";
 import {
   extractMentionTargets,
   extractMessageBody,
   isMentionForwardRequest,
 } from "./mention.js";
+
+// --- Chat history request patterns ---
+const HISTORY_REQUEST_PATTERNS = [
+  /读取.*历史/i,
+  /获取.*历史/i,
+  /查看.*历史/i,
+  /聊天记录/i,
+  /历史消息/i,
+  /历史记录/i,
+  /chat\s*history/i,
+  /message\s*history/i,
+  /fetch.*history/i,
+  /get.*history/i,
+  /总结.*聊天/i,
+  /聊天.*总结/i,
+  /summarize.*chat/i,
+  /chat.*summary/i,
+];
+
+/**
+ * Check if user message is requesting chat history
+ */
+export function isHistoryRequest(content: string): boolean {
+  const normalizedContent = content.toLowerCase().trim();
+  return HISTORY_REQUEST_PATTERNS.some((pattern) => pattern.test(normalizedContent));
+}
+
+/**
+ * Extract requested message count from user message
+ * Returns default of 200 if not specified
+ */
+function extractHistoryCount(content: string): number {
+  const patterns = [
+    /最近\s*(\d+)\s*条/,
+    /(\d+)\s*条消息/,
+    /(\d+)\s*条记录/,
+    /last\s*(\d+)/i,
+    /(\d+)\s*messages/i,
+    /获取\s*(\d+)/,
+    /读取\s*(\d+)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = content.match(pattern);
+    if (match && match[1]) {
+      const num = parseInt(match[1], 10);
+      if (num > 0 && num <= 1000) {
+        return num;
+      }
+    }
+  }
+
+  return 200; // Default
+}
+
+export type ChatHistoryResult = {
+  messages: FeishuHistoryMessage[];
+  total: number;
+  formatted: string;
+};
+
+/**
+ * Fetch chat history and format it for agent context
+ */
+export async function fetchChatHistoryForAgent(params: {
+  cfg: ClawdbotConfig;
+  chatId: string;
+  requestContent: string;
+  runtime?: RuntimeEnv;
+}): Promise<ChatHistoryResult> {
+  const { cfg, chatId, requestContent, runtime } = params;
+  const log = runtime?.log ?? console.log;
+
+  const count = extractHistoryCount(requestContent);
+  log(`feishu: fetching ${count} messages from chat ${chatId}`);
+
+  const result = await listMessagesFeishu({
+    cfg,
+    chatId,
+    count,
+    sortType: "ByCreateTimeDesc",
+  });
+
+  // Format messages for agent (reverse to chronological order)
+  const chronologicalMessages = [...result.messages].reverse();
+
+  const formatted = chronologicalMessages
+    .filter((msg) => !msg.deleted && msg.content.trim())
+    .map((msg) => {
+      const time = new Date(msg.createTime).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const sender = msg.senderType === "app" ? "[Bot]" : msg.senderId;
+      return `[${time}] ${sender}: ${msg.content}`;
+    })
+    .join("\n");
+
+  log(`feishu: fetched ${result.total} messages, formatted ${chronologicalMessages.length} for agent`);
+
+  return {
+    messages: result.messages,
+    total: result.total,
+    formatted,
+  };
+}
+
+// --- Helper: Generate Feishu image URL for model access ---
+// Feishu images can be accessed via URL: https://{domain}/im/v1/images/{imageKey}
+// This allows downstream models to fetch and process the image content.
+function getFeishuImageUrl(params: {
+  imageKey: string;
+  domain?: string;
+  tenantKey?: string;
+}): string {
+  const { imageKey, domain = "feishu", tenantKey } = params;
+  const baseUrl = domain === "lark" ? "https://lark.im" : "https://feishu.cn";
+  const url = new URL(`${baseUrl}/im/v1/images/${imageKey}`);
+  if (tenantKey) {
+    url.searchParams.set("tenant_key", tenantKey);
+  }
+  return url.toString();
+}
 
 // --- Message deduplication ---
 const processedMessages = new Map<string, number>(); // messageId -> timestamp
@@ -341,6 +471,10 @@ async function resolveFeishuMediaList(params: {
   const out: FeishuMediaInfo[] = [];
   const core = getFeishuRuntime();
 
+  // Get Feishu config for domain
+  const feishuCfg = cfg.channels?.feishu as FeishuConfig | undefined;
+  const domain = feishuCfg?.domain ?? "feishu";
+
   // Handle post (rich text) messages with embedded images
   if (messageType === "post") {
     const { imageKeys } = parsePostContent(content);
@@ -372,13 +506,17 @@ async function resolveFeishuMediaList(params: {
           maxBytes,
         );
 
+        // Generate accessible URL for downstream models
+        const imageUrl = getFeishuImageUrl({ imageKey, domain });
+
         out.push({
           path: saved.path,
+          url: imageUrl,
           contentType: saved.contentType,
           placeholder: "<media:image>",
         });
 
-        log?.(`feishu: downloaded embedded image ${imageKey}, saved to ${saved.path}`);
+        log?.(`feishu: downloaded embedded image ${imageKey}, saved to ${saved.path}, URL: ${imageUrl}`);
       } catch (err) {
         log?.(`feishu: failed to download embedded image ${imageKey}: ${String(err)}`);
       }
@@ -434,13 +572,20 @@ async function resolveFeishuMediaList(params: {
       fileName,
     );
 
+    // Generate accessible URL for downstream models (only for images)
+    let imageUrl: string | undefined;
+    if (messageType === "image" && mediaKeys.imageKey) {
+      imageUrl = getFeishuImageUrl({ imageKey: mediaKeys.imageKey, domain });
+    }
+
     out.push({
       path: saved.path,
+      url: imageUrl,
       contentType: saved.contentType,
       placeholder: inferPlaceholder(messageType),
     });
 
-    log?.(`feishu: downloaded ${messageType} media, saved to ${saved.path}`);
+    log?.(`feishu: downloaded ${messageType} media, saved to ${saved.path}${imageUrl ? `, URL: ${imageUrl}` : ""}`);
   } catch (err) {
     log?.(`feishu: failed to download ${messageType} media: ${String(err)}`);
   }
@@ -451,6 +596,9 @@ async function resolveFeishuMediaList(params: {
 /**
  * Build media payload for inbound context.
  * Similar to Discord's buildDiscordMediaPayload().
+ *
+ * IMPORTANT: We prioritize URL over local path so downstream models (like minimax)
+ * can access the image content. Local paths are only kept for debugging/cleanup.
  */
 function buildFeishuMediaPayload(
   mediaList: FeishuMediaInfo[],
@@ -464,13 +612,14 @@ function buildFeishuMediaPayload(
 } {
   const first = mediaList[0];
   const mediaPaths = mediaList.map((media) => media.path);
+  const mediaUrls = mediaList.map((media) => media.url ?? media.path);
   const mediaTypes = mediaList.map((media) => media.contentType).filter(Boolean) as string[];
   return {
     MediaPath: first?.path,
     MediaType: first?.contentType,
-    MediaUrl: first?.path,
+    MediaUrl: first?.url ?? first?.path, // Prioritize URL for model access
     MediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
-    MediaUrls: mediaPaths.length > 0 ? mediaPaths : undefined,
+    MediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined, // Prioritize URLs
     MediaTypes: mediaTypes.length > 0 ? mediaTypes : undefined,
   };
 }
@@ -483,6 +632,17 @@ export function parseFeishuMessageEvent(
   const mentionedBot = checkBotMentioned(event, botOpenId);
   const content = stripBotMention(rawContent, event.message.mentions);
 
+  // Extract image_key if this is an image message
+  let imageKey: string | undefined;
+  if (event.message.message_type === "image") {
+    try {
+      const parsed = JSON.parse(event.message.content);
+      imageKey = parsed.image_key;
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
   const ctx: FeishuMessageContext = {
     chatId: event.message.chat_id,
     messageId: event.message.message_id,
@@ -494,6 +654,7 @@ export function parseFeishuMessageEvent(
     parentId: event.message.parent_id || undefined,
     content,
     contentType: event.message.message_type,
+    imageKey,
   };
 
   // Detect mention forward request: message mentions bot + at least one other user
@@ -679,12 +840,24 @@ export async function handleFeishuMessage(params: {
 
     // Fetch quoted/replied message content if parentId exists
     let quotedContent: string | undefined;
+    let quotedImageKey: string | undefined;
     if (ctx.parentId) {
       try {
         const quotedMsg = await getMessageFeishu({ cfg, messageId: ctx.parentId });
         if (quotedMsg) {
           quotedContent = quotedMsg.content;
           log(`feishu: fetched quoted message: ${quotedContent?.slice(0, 100)}`);
+
+          // Extract image_key from quoted message if it's an image
+          if (quotedMsg.contentType === "image") {
+            try {
+              const parsed = JSON.parse(quotedMsg.content);
+              quotedImageKey = parsed.image_key;
+            } catch {
+              // Ignore parse errors
+            }
+          }
+
           // Resolve media from quoted message and merge with main media list
           const quotedMediaList = await resolveFeishuMediaList({
             cfg,
@@ -701,14 +874,99 @@ export async function handleFeishuMessage(params: {
         log(`feishu: failed to fetch quoted message: ${String(err)}`);
       }
     }
+
+    // Download images for AI vision support
+    const attachments: Array<{ type: "image"; data: Buffer; mimeType: string }> = [];
+
+    // Download current message image if present
+    if (ctx.imageKey) {
+      try {
+        const result = await downloadMessageResourceFeishu({
+          cfg,
+          messageId: ctx.messageId,
+          fileKey: ctx.imageKey,
+          type: "image",
+        });
+
+        let mimeType = result.contentType || "image/jpeg";
+        if (!result.contentType) {
+          mimeType = await core.media.detectMime({ buffer: result.buffer });
+        }
+
+        attachments.push({
+          type: "image",
+          data: result.buffer,
+          mimeType,
+        });
+
+        log(`feishu: downloaded image for AI: ${ctx.imageKey}, size: ${result.buffer.length} bytes, mimeType: ${mimeType}`);
+      } catch (err: any) {
+        log(`feishu: failed to download image for AI: ${err.message || String(err)}`);
+      }
+    }
+
+    // Download quoted message image if present
+    if (quotedImageKey && ctx.parentId) {
+      try {
+        const result = await downloadMessageResourceFeishu({
+          cfg,
+          messageId: ctx.parentId,
+          fileKey: quotedImageKey,
+          type: "image",
+        });
+
+        let mimeType = result.contentType || "image/jpeg";
+        if (!result.contentType) {
+          mimeType = await core.media.detectMime({ buffer: result.buffer });
+        }
+
+        attachments.push({
+          type: "image",
+          data: result.buffer,
+          mimeType,
+        });
+
+        log(`feishu: downloaded quoted image for AI: ${quotedImageKey}, size: ${result.buffer.length} bytes, mimeType: ${mimeType}`);
+      } catch (err: any) {
+        log(`feishu: failed to download quoted image for AI: ${err.message || String(err)}`);
+      }
+    }
+
     const mediaPayload = buildFeishuMediaPayload(mediaList);
 
     const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
+
+    // Check if user is requesting chat history for summarization
+    let historyContext = "";
+    if (isGroup && isHistoryRequest(ctx.content)) {
+      try {
+        log(`feishu: detected history request in message`);
+        const historyResult = await fetchChatHistoryForAgent({
+          cfg,
+          chatId: ctx.chatId,
+          requestContent: ctx.content,
+          runtime,
+        });
+
+        if (historyResult.formatted) {
+          historyContext = `\n\n--- 群聊历史记录 (最近 ${historyResult.total} 条消息) ---\n${historyResult.formatted}\n--- 历史记录结束 ---\n\n`;
+          log(`feishu: included ${historyResult.total} history messages in context`);
+        }
+      } catch (err) {
+        error(`feishu: failed to fetch chat history: ${String(err)}`);
+        // Continue without history, don't block the message
+      }
+    }
 
     // Build message body with quoted content if available
     let messageBody = ctx.content;
     if (quotedContent) {
       messageBody = `[Replying to: "${quotedContent}"]\n\n${ctx.content}`;
+    }
+
+    // Prepend history context if available
+    if (historyContext) {
+      messageBody = historyContext + messageBody;
     }
 
     // Include a readable speaker label so the model can attribute instructions.
@@ -830,7 +1088,16 @@ export async function handleFeishuMessage(params: {
       OriginatingChannel: "feishu" as const,
       OriginatingTo: feishuTo,
       ...mediaPayload,
-    });
+      Attachments: attachments.length > 0 ? attachments : undefined,
+    } as any);
+
+    // Debug: log attachment info
+    if (attachments.length > 0) {
+      log(`feishu: passing ${attachments.length} attachment(s) to agent for AI vision`);
+      attachments.forEach((att, idx) => {
+        log(`feishu: attachment ${idx}: type=${att.type}, size=${att.data.length} bytes, mimeType=${att.mimeType}`);
+      });
+    }
 
     const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
       cfg,

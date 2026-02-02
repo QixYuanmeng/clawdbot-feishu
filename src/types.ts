@@ -29,6 +29,7 @@ export type FeishuMessageContext = {
   parentId?: string;
   content: string;
   contentType: string;
+  imageKey?: string;
   /** Mention forward targets (excluding the bot itself) */
   mentionTargets?: MentionTarget[];
   /** Extracted message body (after removing @ placeholders) */
@@ -50,8 +51,26 @@ export type FeishuProbeResult = {
 
 export type FeishuMediaInfo = {
   path: string;
+  url?: string;
   contentType?: string;
   placeholder: string;
+};
+
+export type FeishuHistoryMessage = {
+  messageId: string;
+  senderId: string;
+  senderType: string;
+  content: string;
+  contentType: string;
+  createTime: number;
+  deleted?: boolean;
+};
+
+export type ListMessagesResult = {
+  messages: FeishuHistoryMessage[];
+  hasMore: boolean;
+  pageToken?: string;
+  total: number;
 };
 
 export type FeishuToolsConfig = {

@@ -121,6 +121,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   const typingCallbacks = createTypingCallbacks({
     start: async () => {
       if (!replyToMessageId) return;
+      // Skip if already showing typing indicator (avoid repeated API calls)
+      if (typingState) return;
       typingState = await addTypingIndicator({ cfg, messageId: replyToMessageId });
       params.runtime.log?.(`feishu: added typing indicator reaction`);
     },
