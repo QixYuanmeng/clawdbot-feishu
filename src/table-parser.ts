@@ -119,6 +119,7 @@ function parsePipeRow(line: string): string[] | null {
  * Check if text contains markdown tables.
  */
 export function containsMarkdownTable(text: string): boolean {
+  TABLE_BLOCK_RE.lastIndex = 0;
   return TABLE_BLOCK_RE.test(text);
 }
 

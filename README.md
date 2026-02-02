@@ -214,6 +214,48 @@ openclaw plugins install ./feishu-0.1.3.tgz
 2. Search for the bot name in Feishu search box
 3. Check if your account is in the app's availability scope
 
+#### Tables display as plain text instead of native tables
+
+If bot replies show tables as plain text instead of Feishu's native table component, run the diagnostic tool:
+
+```bash
+# Run from plugin directory
+npx tsx diagnose-table.ts
+```
+
+The diagnostic tool checks:
+- Correct configuration (`renderMode`)
+- Table format compliance
+- Table parsing functionality
+
+**Manual checklist**:
+
+1. **Verify configuration**: Check OpenClaw config file
+   ```yaml
+   channels:
+     feishu:
+       renderMode: "auto"  # Must be "auto" or "card"
+   ```
+
+2. **Validate table format**: Use standard Markdown table format
+   ```markdown
+   | Column1 | Column2 |
+   |---------|----------|
+   | Data1   | Data2    |
+   ```
+
+3. **Required conditions**:
+   - Every line starts and ends with `|`
+   - Separator line between header and data with `-` or `:` characters
+   - At least 3 rows (header + separator + data)
+
+4. **Restart service**: Restart OpenClaw after config changes
+   ```bash
+   openclaw restart
+   ```
+
+If issue persists, check OpenClaw logs for error messages.
+
 ---
 
 ## 中文
@@ -423,6 +465,48 @@ openclaw plugins install ./feishu-0.1.3.tgz
 1. 确保应用已发布（至少发布到测试版本）
 2. 在飞书搜索框中搜索机器人名称
 3. 检查应用可用范围是否包含你的账号
+
+#### 表格显示为纯文本而非原生表格
+
+如果机器人回复的表格显示为纯文本，而不是飞书原生表格组件，可以运行诊断工具：
+
+```bash
+# 在插件目录中运行
+npx tsx diagnose-table.ts
+```
+
+诊断工具会检查：
+- 配置是否正确（`renderMode`）
+- 表格格式是否符合标准
+- 表格解析是否正常
+
+**手动检查清单**：
+
+1. **确认配置**：检查 OpenClaw 配置文件
+   ```yaml
+   channels:
+     feishu:
+       renderMode: "auto"  # 必须是 "auto" 或 "card"
+   ```
+
+2. **验证表格格式**：使用标准 Markdown 表格格式
+   ```markdown
+   | 列1 | 列2 |
+   |------|-------|
+   | 数据1 | 数据2 |
+   ```
+
+3. **必需条件**：
+   - 每行都以 `|` 开头和结尾
+   - 表头和分隔行之间有一行分隔符（`|---|---|`）
+   - 分隔符必须包含 `-` 或 `:` 字符
+
+4. **重启服务**：修改配置后重启 OpenClaw
+   ```bash
+   openclaw restart
+   ```
+
+如果问题仍未解决，请检查 OpenClaw 日志中的错误信息。
 
 ---
 
