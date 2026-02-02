@@ -240,8 +240,9 @@ function parseMediaKeys(
       case "audio":
         return { fileKey: parsed.file_key };
       case "video":
-        // Video has both file_key (video) and image_key (thumbnail)
-        return { fileKey: parsed.file_key, imageKey: parsed.image_key };
+      case "media":
+        // Video/media has both file_key (video) and image_key (thumbnail)
+        return { fileKey: parsed.file_key, imageKey: parsed.image_key, fileName: parsed.file_name };
       case "sticker":
         return { fileKey: parsed.file_key };
       default:
@@ -308,6 +309,7 @@ function inferPlaceholder(messageType: string): string {
     case "audio":
       return "<media:audio>";
     case "video":
+    case "media":
       return "<media:video>";
     case "sticker":
       return "<media:sticker>";
@@ -331,7 +333,7 @@ async function resolveFeishuMediaList(params: {
   const { cfg, messageId, messageType, content, maxBytes, log } = params;
 
   // Only process media message types (including post for embedded images)
-  const mediaTypes = ["image", "file", "audio", "video", "sticker", "post"];
+  const mediaTypes = ["image", "file", "audio", "video", "media", "sticker", "post"];
   if (!mediaTypes.includes(messageType)) {
     return [];
   }
@@ -398,7 +400,11 @@ async function resolveFeishuMediaList(params: {
 
     // For message media, always use messageResource API
     // The image.get API is only for images uploaded via im/v1/images, not for message attachments
-    const fileKey = mediaKeys.imageKey || mediaKeys.fileKey;
+    // For video/media messages, prefer file_key (actual video) over image_key (thumbnail)
+    const isVideoType = messageType === "video" || messageType === "media";
+    const fileKey = isVideoType 
+      ? (mediaKeys.fileKey || mediaKeys.imageKey)
+      : (mediaKeys.imageKey || mediaKeys.fileKey);
     if (!fileKey) {
       return [];
     }
@@ -566,17 +572,32 @@ export async function handleFeishuMessage(params: {
     const groupAllowFrom = feishuCfg?.groupAllowFrom ?? [];
     const groupConfig = resolveFeishuGroupConfig({ cfg: feishuCfg, groupId: ctx.chatId });
 
-    const senderAllowFrom = groupConfig?.allowFrom ?? groupAllowFrom;
-    const allowed = isFeishuGroupAllowed({
+    // Check if this GROUP is allowed (groupAllowFrom contains group IDs like oc_xxx, not user IDs)
+    const groupAllowed = isFeishuGroupAllowed({
       groupPolicy,
-      allowFrom: senderAllowFrom,
-      senderId: ctx.senderOpenId,
-      senderName: ctx.senderName,
+      allowFrom: groupAllowFrom,
+      senderId: ctx.chatId, // Check group ID, not sender ID
+      senderName: undefined,
     });
 
-    if (!allowed) {
-      log(`feishu: sender ${ctx.senderOpenId} not in group allowlist`);
+    if (!groupAllowed) {
+      log(`feishu: group ${ctx.chatId} not in allowlist`);
       return;
+    }
+
+    // Additional sender-level allowlist check if group has specific allowFrom config
+    const senderAllowFrom = groupConfig?.allowFrom ?? [];
+    if (senderAllowFrom.length > 0) {
+      const senderAllowed = isFeishuGroupAllowed({
+        groupPolicy: "allowlist",
+        allowFrom: senderAllowFrom,
+        senderId: ctx.senderOpenId,
+        senderName: ctx.senderName,
+      });
+      if (!senderAllowed) {
+        log(`feishu: sender ${ctx.senderOpenId} not in group ${ctx.chatId} sender allowlist`);
+        return;
+      }
     }
 
     const { requireMention } = resolveFeishuReplyPolicy({
@@ -647,7 +668,7 @@ export async function handleFeishuMessage(params: {
 
     // Resolve media from message
     const mediaMaxBytes = (feishuCfg?.mediaMaxMb ?? 30) * 1024 * 1024; // 30MB default
-    const mediaList = await resolveFeishuMediaList({
+    let mediaList = await resolveFeishuMediaList({
       cfg,
       messageId: ctx.messageId,
       messageType: event.message.message_type,
@@ -655,7 +676,6 @@ export async function handleFeishuMessage(params: {
       maxBytes: mediaMaxBytes,
       log,
     });
-    const mediaPayload = buildFeishuMediaPayload(mediaList);
 
     // Fetch quoted/replied message content if parentId exists
     let quotedContent: string | undefined;
@@ -665,11 +685,23 @@ export async function handleFeishuMessage(params: {
         if (quotedMsg) {
           quotedContent = quotedMsg.content;
           log(`feishu: fetched quoted message: ${quotedContent?.slice(0, 100)}`);
+          // Resolve media from quoted message and merge with main media list
+          const quotedMediaList = await resolveFeishuMediaList({
+            cfg,
+            messageId: quotedMsg.messageId,
+            messageType: quotedMsg.contentType,
+            content: quotedMsg.content,
+            maxBytes: mediaMaxBytes,
+            log,
+          });
+          mediaList = [...mediaList, ...quotedMediaList];
+          log(`feishu: resolved ${quotedMediaList.length} media items from quoted message`);
         }
       } catch (err) {
         log(`feishu: failed to fetch quoted message: ${String(err)}`);
       }
     }
+    const mediaPayload = buildFeishuMediaPayload(mediaList);
 
     const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
 
