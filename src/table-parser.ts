@@ -25,7 +25,6 @@ export interface FeishuTableComponent {
     text_align: "center" | "left" | "right";
     text_size: "normal" | "large";
     background_style: "grey" | "none";
-    font_weight: "bold" | "normal";
   };
   columns: FeishuTableColumn[];
   rows: Record<string, string>[];
@@ -98,7 +97,6 @@ function parseMarkdownTable(tableStr: string): FeishuTableComponent | null {
       text_align: "center",
       text_size: "normal",
       background_style: "grey",
-      font_weight: "bold",
     },
     columns,
     rows,
