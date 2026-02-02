@@ -118,10 +118,11 @@ const TOOL_NAME_LABELS: Record<string, string> = {
 
 function splitToolSummaryLines(text: string) {
   const toolLines: string[] = [];
-  const otherLines: string[] = [];
-  const lines = text.split(/\r?\n/);
   const toolRegex =
-    /^\s*[\p{Extended_Pictographic}\uFE0F\u200D\s]+([A-Za-z0-9_ ][A-Za-z0-9_ ]*?)\s*:\s*(.*)$/u;
+    /^\s*[\p{Extended_Pictographic}\uFE0F\u200D\s]*([A-Za-z][A-Za-z0-9_ ]{0,60})\s*:\s*(.*)$/u;
+
+  const lines = text.split(/\r?\n/);
+  const otherLines: string[] = [];
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -133,21 +134,21 @@ function splitToolSummaryLines(text: string) {
     if (match) {
       const rawToolName = match[1]?.trim() ?? "";
       const normalized = rawToolName.toLowerCase().replace(/[-\s]+/g, "_");
-      if (normalized && TOOL_NAMES.has(normalized)) {
-        const meta = match[2]?.trim();
-        const label = TOOL_NAME_LABELS[normalized] ?? rawToolName;
-        const header = `调用\`${label}\`工具:`;
-        toolLines.push(meta ? `${header} ${meta}` : header);
-        continue;
-      }
+      const label = TOOL_NAME_LABELS[normalized] ?? rawToolName;
+      const header = `调用\`${label}\`工具:`;
+      const meta = match[2]?.trim();
+      toolLines.push(meta ? `${header} ${meta}` : header);
+      continue;
     }
     otherLines.push(rawLine);
   }
 
-  return {
-    toolLines,
-    remainingText: otherLines.join("\n").trim(),
-  };
+  let remainingText = otherLines.join("\n").trim();
+  if (toolLines.length > 0 && remainingText) {
+    remainingText = `\n\n${remainingText}`;
+  }
+
+  return { toolLines, remainingText };
 }
 
 function extractAgentMessages(payload: ReplyPayload): AgentCoreMessage[] | null {
