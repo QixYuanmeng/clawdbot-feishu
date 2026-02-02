@@ -50,6 +50,7 @@ export type FeishuProbeResult = {
 
 export type FeishuMediaInfo = {
   path: string;
+  url?: string;
   contentType?: string;
   placeholder: string;
 };
