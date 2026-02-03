@@ -2,6 +2,7 @@ import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu, sendMarkdownCardFeishu } from "./send.js";
 import { sendMediaFeishu } from "./media.js";
+import { createFeishuRenderer } from "./renderers/feishu-renderer.js";
 import type { FeishuConfig } from "./types.js";
 
 function shouldUseCard(text: string): boolean {
@@ -21,24 +22,43 @@ export const feishuOutbound: ChannelOutboundAdapter = {
     const useCard =
       renderMode === "card" || (renderMode === "auto" && shouldUseCard(text ?? ""));
 
+    const renderer = createFeishuRenderer({
+      cfg,
+      agentId: "feishu-outbound",
+      runtime: getFeishuRuntime(),
+      chatId: to,
+    });
+
     if (useCard) {
-      const result = await sendMarkdownCardFeishu({ cfg, to, text: text ?? "" });
-      return { channel: "feishu", ...result };
+      const result = await renderer.deliver({
+        chatId: to,
+        text: text ?? "",
+        replyToMessageId: undefined,
+      });
+      return { channel: "feishu", result };
     }
 
     const result = await sendMessageFeishu({ cfg, to, text: text ?? "" });
-    return { channel: "feishu", ...result };
+    return { channel: "feishu", result };
   },
   sendMedia: async ({ cfg, to, text, mediaUrl }) => {
+    const renderer = createFeishuRenderer({
+      cfg,
+      agentId: "feishu-outbound",
+      runtime: getFeishuRuntime(),
+      chatId: to,
+    });
+
     // Send text first if provided
     if (text?.trim()) {
-      const feishuCfg = cfg.channels?.feishu as FeishuConfig | undefined;
-      const renderMode = feishuCfg?.renderMode ?? "auto";
-      const useCard =
-        renderMode === "card" || (renderMode === "auto" && shouldUseCard(text ?? ""));
+      const useCard = shouldUseCard(text ?? "");
 
       if (useCard) {
-        await sendMarkdownCardFeishu({ cfg, to, text });
+        await renderer.deliver({
+          chatId: to,
+          text: text ?? "",
+          replyToMessageId: undefined,
+        });
       } else {
         await sendMessageFeishu({ cfg, to, text });
       }
@@ -46,17 +66,26 @@ export const feishuOutbound: ChannelOutboundAdapter = {
 
     // Upload and send media if URL provided
     if (mediaUrl) {
-      try {
-        const result = await sendMediaFeishu({ cfg, to, mediaUrl });
-        return { channel: "feishu", ...result };
-      } catch (err) {
-        // Log the error for debugging
-        console.error(`[feishu] sendMediaFeishu failed:`, err);
-        // Fallback to URL link if upload fails
-        const fallbackText = `📎 ${mediaUrl}`;
-        const result = await sendMessageFeishu({ cfg, to, text: fallbackText });
-        return { channel: "feishu", ...result };
+      let lastError;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const result = await sendMediaFeishu({ cfg, to, mediaUrl });
+          return { channel: "feishu", ...result };
+        } catch (err) {
+          lastError = err;
+          console.error(`[feishu] sendMediaFeishu failed (attempt ${attempt}/3):`, err);
+          if (attempt < 3) {
+            const delay = 1000 * Math.pow(2, attempt - 1);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
       }
+
+      // Fallback to URL link if upload fails after retries
+      console.error(`[feishu] sendMediaFeishu failed after 3 attempts. Fallback to URL.`);
+      const fallbackText = `[Media Upload Failed] Click to view: ${mediaUrl}`;
+      const result = await sendMessageFeishu({ cfg, to, text: fallbackText });
+      return { channel: "feishu", ...result };
     }
 
     // No media URL, just return text result
