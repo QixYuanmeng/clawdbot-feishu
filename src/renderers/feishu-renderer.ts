@@ -451,6 +451,7 @@ function createAgentCardRenderer(params: CreateFeishuRendererParams): FeishuRend
   let updater: ReturnType<typeof createCardUpdateController> | null = null;
 
   const assistantBufferState = { text: "" };
+  let initialSendPromise: Promise<void> | null = null;
 
   const renderCard = (collapseTimeline: boolean) => {
     const state = tracker.buildRenderState({ collapseTimeline });
@@ -524,16 +525,29 @@ function createAgentCardRenderer(params: CreateFeishuRendererParams): FeishuRend
       }
 
       if (!messageId) {
-        const card = renderCard(false);
-        const result = await sendCardFeishu({ cfg, to: chatId, card, replyToMessageId });
-        messageId = result.messageId;
-        updater = createCardUpdateController({ cfg, messageId });
-        return;
+        if (!initialSendPromise) {
+          initialSendPromise = (async () => {
+            try {
+              const card = renderCard(false);
+              const result = await sendCardFeishu({ cfg, to: chatId, card, replyToMessageId });
+              messageId = result.messageId;
+              updater = createCardUpdateController({ cfg, messageId });
+            } catch (err) {
+              runtime.error?.(`feishu initial send failed: ${String(err)}`);
+              initialSendPromise = null;
+              throw err;
+            }
+          })();
+        }
+        await initialSendPromise;
       }
 
-      renderCard(false);
+      if (messageId) {
+        renderCard(false);
+      }
     },
     finalize: async () => {
+      if (initialSendPromise) await initialSendPromise;
       if (!messageId && !assistantBuffer.trim() && tracker.currentStatus === AgentRunStatus.Thinking) {
         return;
       }
@@ -542,6 +556,7 @@ function createAgentCardRenderer(params: CreateFeishuRendererParams): FeishuRend
       await updater?.flush();
     },
     onError: async () => {
+      if (initialSendPromise) await initialSendPromise;
       if (!messageId && !assistantBuffer.trim()) return;
       tracker.setStatus(AgentRunStatus.Error);
       renderCard(true);
