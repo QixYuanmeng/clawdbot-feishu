@@ -32,6 +32,8 @@ const MarkdownConfigSchema = z
 
 // Message render mode: auto (default) = detect markdown, raw = plain text, card = always card
 const RenderModeSchema = z.enum(["auto", "raw", "card"]).optional();
+// Render engine: simple = existing text/card delivery, agent-card = streaming card renderer
+const RenderEngineSchema = z.enum(["simple", "agent-card"]).optional();
 
 const BlockStreamingCoalesceSchema = z
   .object({
@@ -50,24 +52,20 @@ const ChannelHeartbeatVisibilitySchema = z
   .strict()
   .optional();
 
-/**
- * Feishu tools configuration.
- * Controls which tool categories are enabled.
- *
- * Dependencies:
- * - wiki requires doc (wiki content is edited via doc tools)
- * - perm can work independently but is typically used with drive
- */
+const MenuEventsSchema = z.record(z.string(), z.string()).optional();
+const EventsSchema = z.record(z.string(), z.string()).optional();
+
 const FeishuToolsConfigSchema = z
   .object({
-    doc: z.boolean().optional(), // Document operations (default: true)
-    wiki: z.boolean().optional(), // Knowledge base operations (default: true, requires doc)
-    drive: z.boolean().optional(), // Cloud storage operations (default: true)
-    perm: z.boolean().optional(), // Permission management (default: false, sensitive)
-    scopes: z.boolean().optional(), // App scopes diagnostic (default: true)
+    doc: z.boolean().optional(),
+    wiki: z.boolean().optional(),
+    drive: z.boolean().optional(),
+    perm: z.boolean().optional(),
+    scopes: z.boolean().optional(),
   })
   .strict()
   .optional();
+
 
 export const FeishuGroupSchema = z
   .object({
@@ -109,9 +107,10 @@ export const FeishuConfigSchema = z
     mediaMaxMb: z.number().positive().optional(),
     heartbeat: ChannelHeartbeatVisibilitySchema,
     renderMode: RenderModeSchema, // raw = plain text (default), card = interactive card with markdown
-    menuEvents: z.record(z.string(), z.string()).optional(),
-    events: z.record(z.string(), z.string()).optional(),
+    menuEvents: MenuEventsSchema,
+    events: EventsSchema,
     tools: FeishuToolsConfigSchema,
+    renderEngine: RenderEngineSchema,
   })
   .strict()
   .superRefine((value, ctx) => {
