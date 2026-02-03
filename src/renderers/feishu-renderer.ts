@@ -1,20 +1,18 @@
-import type { ClawdbotConfig, RuntimeEnv, ReplyPayload } from "openclaw/plugin-sdk";
+import type { ReplyPayload, ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import { getFeishuRuntime } from "../runtime.js";
 import {
   sendMessageFeishu,
-  sendMarkdownCardFeishu,
   sendCardFeishu,
+  sendMarkdownCardFeishu,
   updateCardFeishu,
 } from "../send.js";
 import type { FeishuConfig } from "../types.js";
-import type { MentionTarget } from "../mention.js";
-import { buildMentionedCardContent } from "../mention.js";
 import {
-  AgentRunTracker,
   AgentRunStatus,
+  AgentRunTracker,
   buildLarkCard,
-  type AgentCoreMessage,
 } from "./agent-card-view.js";
+import { buildMentionedCardContent, type MentionTarget } from "../mention.js";
 
 type FeishuRenderController = {
   deliver: (payload: ReplyPayload) => Promise<void>;
@@ -63,271 +61,137 @@ const TOOL_NAMES = new Set(
     "message",
     "sessions_list",
     "sessions_send",
-    "sessions_spawn",
-    "session_status",
+    "sessions_read",
+    "sessions_search",
+    "sessions_info",
+    "librarian",
+    "oracle",
+    "explore",
+    "prometheus",
+    "sisyphus-junior",
+    "metis",
+    "momus",
+    "multimodal-looker",
+    "skill",
+    "skill_mcp",
+    "google_search",
+    "zread_search_doc",
+    "zread_read_file",
+    "zread_get_repo_structure",
+    "web-search-prime_webSearchPrime",
+    "zai-mcp-server_ui_to_artifact",
+    "zai-mcp-server_extract_text_from_screenshot",
+    "zai-mcp-server_diagnose_error_screenshot",
+    "zai-mcp-server_understand_technical_diagram",
+    "zai-mcp-server_analyze_data_visualization",
+    "zai-mcp-server_ui_diff_check",
+    "zai-mcp-server_analyze_image",
+    "zai-mcp-server_analyze_video",
     "cron",
-    "feishu_doc_read",
-    "feishu_doc_write",
-    "feishu_doc_append",
-    "feishu_doc_list_blocks",
-    "feishu_doc_update",
-    "feishu_doc_delete_block",
-    "feishu_folder_list",
-    "feishu_doc_create",
-    "memory_search",
-    "memory_get",
-    "tts",
-    "canvas",
-    "nodes",
-    "gateway",
-    "agents_list",
-  ].map((name) => name.toLowerCase()),
+  ].map((s) => s.toLowerCase()),
 );
 
-const TOOL_NAME_LABELS: Record<string, string> = {
-  read: "读取文件",
-  write: "写入文件",
-  edit: "编辑文件",
-  exec: "执行命令",
-  process: "进程管理",
-  web_search: "网页搜索",
-  web_fetch: "抓取网页",
-  browser: "浏览器",
-  message: "发送消息",
-  sessions_list: "列会话",
-  sessions_send: "跨会话发送",
-  sessions_spawn: "派生代理",
-  session_status: "会话状态",
-  cron: "定时任务",
-  feishu_doc_read: "飞书读文档",
-  feishu_doc_write: "飞书写文档",
-  feishu_doc_append: "飞书追加",
-  feishu_doc_list_blocks: "飞书列文档块",
-  feishu_doc_update: "飞书更新文档块",
-  feishu_doc_delete_block: "飞书删除文档块",
-  feishu_folder_list: "飞书列文件夹",
-  feishu_doc_create: "飞书创建文档",
-  memory_search: "记忆搜索",
-  memory_get: "读取记忆",
-  tts: "语音合成",
-  canvas: "画布控制",
-  nodes: "节点管理",
-  gateway: "网关管理",
-  agents_list: "列出代理",
-};
-
 function splitToolSummaryLines(text: string) {
+  const lines = text.split("\n");
   const toolLines: string[] = [];
-  const toolRegex =
-    /^\s*[\p{Extended_Pictographic}\uFE0F\u200D\s]*([A-Za-z][A-Za-z0-9_ ]{0,60})\s*:\s*(.*)$/u;
+  const contentLines: string[] = [];
 
-  const lines = text.split(/\r?\n/);
-  const otherLines: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
 
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) {
-      otherLines.push(rawLine);
-      continue;
+    const lower = trimmed.toLowerCase();
+    const hasToolEmoji =
+      lower.startsWith("🔧") ||
+      lower.startsWith("🔍") ||
+      lower.startsWith("📝") ||
+      lower.startsWith("💻");
+
+    const matchedTool = Array.from(TOOL_NAMES).find((name) => lower.includes(name));
+
+    if (hasToolEmoji && matchedTool && (lower.includes(":") || lower.includes("："))) {
+      toolLines.push(trimmed);
+    } else {
+      contentLines.push(line);
     }
-    const match = line.match(toolRegex);
-    if (match) {
-      const rawToolName = match[1]?.trim() ?? "";
-      const normalized = rawToolName.toLowerCase().replace(/[-\s]+/g, "_");
-      const label = TOOL_NAME_LABELS[normalized] ?? rawToolName;
-      const header = `调用\`${label}\`工具:`;
-      const meta = match[2]?.trim();
-      toolLines.push(meta ? `${header} ${meta}` : header);
-      continue;
-    }
-    otherLines.push(rawLine);
   }
 
-  let remainingText = otherLines.join("\n").trim();
-  if (toolLines.length > 0 && remainingText) {
-    remainingText = `\n\n${remainingText}`;
-  }
-
-  return { toolLines, remainingText };
-}
-
-function extractAgentMessages(payload: ReplyPayload): AgentCoreMessage[] | null {
-  const raw = payload as unknown as {
-    messages?: AgentCoreMessage[];
-    meta?: { messages?: AgentCoreMessage[]; agentMessages?: AgentCoreMessage[] };
-    extra?: { messages?: AgentCoreMessage[] };
-    context?: { messages?: AgentCoreMessage[] };
-    delta?: { messages?: AgentCoreMessage[] };
-    events?: unknown[];
+  return {
+    toolLines,
+    remainingText: contentLines.join("\n").trim(),
   };
-
-  const candidates = [
-    raw.messages,
-    raw.meta?.agentMessages,
-    raw.meta?.messages,
-    raw.extra?.messages,
-    raw.context?.messages,
-    raw.delta?.messages,
-  ];
-
-  for (const list of candidates) {
-    if (Array.isArray(list) && list.length > 0) {
-      const hasRole = list.some((item) => item && typeof item === "object" && "role" in item);
-      if (hasRole) {
-        return list;
-      }
-    }
-  }
-
-  return null;
 }
 
-function extractVerboseEvents(payload: ReplyPayload): unknown[] | null {
-  const raw = payload as unknown as {
-    events?: unknown[];
-    meta?: { events?: unknown[] };
-    extra?: { events?: unknown[] };
-    context?: { events?: unknown[] };
-    delta?: { events?: unknown[] };
-  };
-
-  const candidates = [
-    raw.events,
-    raw.meta?.events,
-    raw.extra?.events,
-    raw.context?.events,
-    raw.delta?.events,
-  ];
-
-  for (const list of candidates) {
-    if (Array.isArray(list) && list.length > 0) {
-      return list;
-    }
-  }
-
-  return null;
+function extractAgentMessages(payload: ReplyPayload): any[] {
+  const p = payload as any;
+  return (
+    p.messages ||
+    p.meta?.agentMessages ||
+    p.meta?.messages ||
+    p.extra?.messages ||
+    p.context?.messages ||
+    p.delta?.messages ||
+    []
+  );
 }
 
-function safeText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value === null || value === undefined) return "";
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
+function extractVerboseEvents(payload: ReplyPayload): any[] {
+  const p = payload as any;
+  return (
+    p.events ||
+    p.meta?.events ||
+    p.extra?.events ||
+    p.context?.events ||
+    p.delta?.events ||
+    []
+  );
+}
+
+function inferStatusFromMessages(messages: any[]): AgentRunStatus | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "tool") return AgentRunStatus.WaitingToolResult;
+    if (m.role === "assistant") {
+      const hasToolCall = m.content?.some((c: any) => c.type === "tool-call");
+      if (hasToolCall) return AgentRunStatus.ToolCalling;
+    }
   }
+  return null;
 }
 
 function applyVerboseEvent(params: {
   tracker: AgentRunTracker;
-  event: unknown;
+  event: any;
   assistantBuffer: { text: string };
 }) {
-  const { tracker, assistantBuffer } = params;
-  const evt = params.event as { stream?: string; data?: any; event?: string; payload?: any };
-  const stream = evt?.stream ?? evt?.event ?? evt?.payload?.stream;
-  const data = evt?.data ?? evt?.payload?.data ?? evt?.payload ?? {};
+  const { tracker, event, assistantBuffer } = params;
+  const data = event.data || {};
+  const stream = event.stream || event.event || event.payload?.stream;
 
   if (stream === "assistant") {
-    const text = typeof data.text === "string" ? data.text : "";
-    if (text) {
-      tracker.setStatus(AgentRunStatus.Thinking);
-      const prev = assistantBuffer.text;
-      if (text.startsWith(prev)) {
-        assistantBuffer.text = text;
-      } else if (prev.startsWith(text)) {
-        // ignore
-      } else {
-        assistantBuffer.text += text;
-      }
+    if (data.text) {
+      assistantBuffer.text = mergeStreamText(assistantBuffer.text, data.text);
       tracker.setDraftAnswer(assistantBuffer.text);
     }
-    return;
-  }
-
-  if (stream === "tool") {
-    const phase = typeof data.phase === "string" ? data.phase : "unknown";
-    const name = typeof data.name === "string" ? data.name : "unknown-tool";
-    const toolCallId = typeof data.toolCallId === "string" ? data.toolCallId : undefined;
-
+    if (tracker.currentStatus === AgentRunStatus.Idle) {
+      tracker.setStatus(AgentRunStatus.Thinking);
+    }
+  } else if (stream === "tool") {
+    const phase = data.phase;
     if (phase === "start") {
       tracker.setStatus(AgentRunStatus.ToolCalling);
-      tracker.appendMessages([
-        {
-          role: "assistant",
-          content: [
-            { type: "tool-call", toolName: name, toolUseId: toolCallId, startedAt: Date.now() },
-          ],
-        },
-      ]);
-      return;
-    }
-
-    if (phase === "end" || phase === "result" || phase === "output" || phase === "error") {
-      const isError = typeof data.isError === "boolean" ? data.isError : phase === "error";
-      const meta = safeText(data.meta);
-      const output = data.output !== undefined ? safeText(data.output) : "";
-      const text = [output ? `输出: ${output}` : "", meta ? `备注: ${meta}` : "", isError ? "错误: true" : ""]
-        .filter(Boolean)
-        .join("\n");
-
-      tracker.appendMessages([
-        {
-          role: "tool",
-          toolUseId: toolCallId,
-          content: [
-            {
-              type: "tool-result",
-              toolUseId: toolCallId,
-              text: text || (isError ? "工具执行失败" : "工具执行完成"),
-              completedAt: Date.now(),
-              durationMs: typeof data.durationMs === "number" ? data.durationMs : undefined,
-              raw: data,
-            },
-          ],
-        },
-      ]);
-
-      tracker.setStatus(isError ? AgentRunStatus.Error : AgentRunStatus.WaitingToolResult);
-      return;
-    }
-
-    tracker.setStatus(AgentRunStatus.ToolCalling);
-    return;
-  }
-
-  if (stream === "lifecycle") {
-    const phase = typeof data.phase === "string" ? data.phase : "";
-    if (phase === "start") {
-      tracker.setStatus(AgentRunStatus.Thinking);
-      return;
-    }
-    if (phase === "error") {
+    } else if (phase === "result" || phase === "output") {
+      tracker.setStatus(AgentRunStatus.WaitingToolResult);
+    } else if (phase === "error") {
       tracker.setStatus(AgentRunStatus.Error);
-      const err = typeof data.error === "string" ? data.error : "执行异常";
-      tracker.setDraftAnswer(err);
-      return;
+    }
+  } else if (stream === "lifecycle") {
+    if (data.phase === "start") {
+      tracker.setStatus(AgentRunStatus.Thinking);
+    } else if (data.phase === "error") {
+      tracker.setStatus(AgentRunStatus.Error);
     }
   }
-}
-
-function inferStatusFromMessages(messages: AgentCoreMessage[]): AgentRunStatus | null {
-  let sawToolCall = false;
-  let sawThinking = false;
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const part of message.content) {
-      if (part.type === "tool-call") {
-        sawToolCall = true;
-      }
-      if (part.type === "thinking") {
-        sawThinking = true;
-      }
-    }
-  }
-  if (sawToolCall) return AgentRunStatus.ToolCalling;
-  if (sawThinking) return AgentRunStatus.Thinking;
-  return null;
 }
 
 function createCardUpdateController(params: {
@@ -460,11 +324,27 @@ function createAgentCardRenderer(params: CreateFeishuRendererParams): FeishuRend
       ...state,
       body,
     });
-    if (!messageId) {
-      return card;
+    if (messageId && updater) {
+      updater.schedule(card);
     }
-    updater?.schedule(card);
     return card;
+  };
+
+  const ensureInitialCard = () => {
+    if (messageId || initialSendPromise) return;
+
+    initialSendPromise = (async () => {
+      try {
+        const card = renderCard(false);
+        const result = await sendCardFeishu({ cfg, to: chatId, card, replyToMessageId });
+        messageId = result.messageId;
+        updater = createCardUpdateController({ cfg, messageId });
+        renderCard(false);
+      } catch (err) {
+        runtime.error?.(`feishu initial send failed: ${String(err)}`);
+        initialSendPromise = null;
+      }
+    })();
   };
 
   return {
@@ -475,7 +355,6 @@ function createAgentCardRenderer(params: CreateFeishuRendererParams): FeishuRend
           runtime.log?.(
             `feishu payload keys=${Object.keys(payload as Record<string, unknown>).join(",")} size=${snapshot.length}`,
           );
-          runtime.log?.(`feishu payload sample=${snapshot.slice(0, 2000)}`);
         } catch (err) {
           runtime.log?.(`feishu payload log failed: ${String(err)}`);
         }
@@ -520,27 +399,10 @@ function createAgentCardRenderer(params: CreateFeishuRendererParams): FeishuRend
           }
         }
       } else if (!events || events.length === 0) {
-        runtime.log?.(`feishu deliver: empty text, skipping`);
         return;
       }
 
-      if (!messageId) {
-        if (!initialSendPromise) {
-          initialSendPromise = (async () => {
-            try {
-              const card = renderCard(false);
-              const result = await sendCardFeishu({ cfg, to: chatId, card, replyToMessageId });
-              messageId = result.messageId;
-              updater = createCardUpdateController({ cfg, messageId });
-            } catch (err) {
-              runtime.error?.(`feishu initial send failed: ${String(err)}`);
-              initialSendPromise = null;
-              throw err;
-            }
-          })();
-        }
-        await initialSendPromise;
-      }
+      ensureInitialCard();
 
       if (messageId) {
         renderCard(false);
