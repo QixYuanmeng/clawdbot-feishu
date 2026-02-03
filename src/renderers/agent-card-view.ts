@@ -253,15 +253,19 @@ export class AgentRunTracker {
     let body: string;
     let finalAnswer: string | undefined;
     let showTimelinePanel = false;
-
+    
     if (showFinalAnswer) {
       finalAnswer = finalAnswerText || undefined;
-      showTimelinePanel = hasTimeline;
-      body = finalAnswer || "暂无最终回复";
+      showTimelinePanel = hasTimeline;  // 第一条消息也显示时间线（如果有工具调用）
     } else {
-      finalAnswer = undefined;
-      showTimelinePanel = false;
-      body = timelineMarkdown || this.draftAnswer || "思考中...";
+      // 后续消息：不强制显示时间线，使用 showTimelinePanel 状态
+      if (showFinalAnswer) {
+        finalAnswer = finalAnswerText || undefined;
+        showTimelinePanel = hasTimeline;
+      } else {
+        finalAnswer = undefined;
+        showTimelinePanel = false;
+      }
     }
 
     return {
